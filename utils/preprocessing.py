@@ -2,6 +2,7 @@ from typing import Optional, Any
 
 import pandas as pd
 from isbnlib import to_isbn13
+from langcodes import Language
 
 
 def convert_to_isbn13(value: Any) -> Optional[str]:
@@ -36,3 +37,15 @@ def get_weighted_rating(df: pd.DataFrame,
     first = ratings_count * ratings_mean / (ratings_count + min_rate_count)
     second = min_rate_count * mean_rate / (ratings_count + min_rate_count)
     return first + second
+
+
+def normalize_language_code(language_code: Any) -> Optional[str]:
+    """Normalize language code.
+
+    :param language_code: value to normalize.
+    :return: normalized value or None.
+    """
+    try:
+        return Language.get(language_code).language_name()
+    except (ValueError, AttributeError):
+        return None

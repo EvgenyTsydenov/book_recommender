@@ -160,3 +160,5 @@ cython_debug/
 /book_crossing/data_interm/
 /book_crossing/data_original/
 /book_crossing/data_prep/
+/goodreads/data_prep/
+/goodreads/data_original/
