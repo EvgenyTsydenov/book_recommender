@@ -1,0 +1,23 @@
+name: book_recommender
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9.7
+  - geopandas
+  - jupyter
+  - jupyterlab
+  - matplotlib
+  - seaborn
+  - gdown
+  - pycountry
+  - python-dotenv
+  - langcodes
+  - pandas
+  - neptune-client
+  - optuna
+  - pip:
+    - countryinfo==0.1.2
+    - isbnlib==3.10.9
+    - language-data==1.1
+    - marisa-trie==0.7.7
