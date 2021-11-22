@@ -155,3 +155,8 @@ cython_debug/
 
 ### JetBrains
 .idea/**
+
+### Project files
+/book_crossing/data_interm/
+/book_crossing/data_original/
+/book_crossing/data_prep/
