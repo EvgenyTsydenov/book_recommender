@@ -162,4 +162,5 @@ cython_debug/
 /book_crossing/data_prep/
 /goodreads/data_prep/
 /goodreads/data_original/
-/recommender/data_interm/
+/recommender/data/
+/recommender/training_scripts/.neptune/
