@@ -1,0 +1,10 @@
+services:
+    optuna_db:
+      image: mysql
+      ports:
+        - ${OPTUNA_DB_PORT}:${OPTUNA_DB_PORT}
+      environment:
+        MYSQL_ROOT_PASSWORD: ${OPTUNA_DB_PASSWORD}
+        MYSQL_DATABASE: ${OPTUNA_DB_NAME}
+      volumes:
+        - ./recommender/data/optuna_db:/var/lib/mysql

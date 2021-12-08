@@ -7,6 +7,7 @@ import neptune.new as neptune
 import optuna
 import pandas as pd
 from scipy.sparse import coo_matrix
+from sqlalchemy.engine import URL
 
 # noinspection PyUnresolvedReferences
 import shared
@@ -144,6 +145,17 @@ if __name__ == '__main__':
 
     # Start tuning
     objective = ObjectiveSVD(work_ratings_train, work_ratings_val, scalers)
+    study_name = 'svd'
+    storage_url = URL.create(drivername=os.environ['OPTUNA_DB_DRIVER'],
+                             username=os.environ['OPTUNA_DB_USER'],
+                             password=os.environ['OPTUNA_DB_PASSWORD'],
+                             host=os.environ['OPTUNA_DB_HOST'],
+                             port=os.environ['OPTUNA_DB_PORT'],
+                             database=os.environ['OPTUNA_DB_NAME'])
+    storage = optuna.storages.RDBStorage(url=str(storage_url),
+                                         engine_kwargs={'pool_recycle': 3600})
     study_sampler = optuna.samplers.TPESampler(seed=RANDOM_SEED)
-    study = optuna.create_study(sampler=study_sampler, direction='minimize')
+    study = optuna.create_study(sampler=study_sampler, direction='minimize',
+                                storage=storage, load_if_exists=True,
+                                study_name=study_name)
     study.optimize(objective, n_trials=20)
