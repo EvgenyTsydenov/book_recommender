@@ -162,6 +162,6 @@ cython_debug/
 /book_crossing/data_prep/
 /goodreads/data_prep/
 /goodreads/data_original/
-/recommender/data/
-/recommender/training_scripts/.neptune/
-/recommender/trained_models/
+/data/
+*/.neptune/*
+/trained_models/

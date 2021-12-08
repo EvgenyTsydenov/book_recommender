@@ -5,7 +5,7 @@ from os.path import dirname
 from dotenv import load_dotenv
 
 # Append PYTHONPATH with the project path
-sys.path.append(dirname(dirname(dirname(dirname(__file__)))))
+sys.path.append(dirname(dirname(dirname(__file__))))
 
 # Load environment variables
 load_dotenv()

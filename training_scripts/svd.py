@@ -11,9 +11,9 @@ from sqlalchemy.engine import URL
 
 # noinspection PyUnresolvedReferences
 import shared
-from recommender.models.svd import RecommenderSVD
+from models.svd import RecommenderSVD
 from shared import NEPTUNE_API_KEY, NEPTUNE_PROJECT, RANDOM_SEED
-from shared.utils import ObjectiveBase
+from utils.training import ObjectiveBase
 
 
 class ObjectiveSVD(ObjectiveBase):
