@@ -120,6 +120,13 @@ class ObjectiveSVD(ObjectiveBase):
 
             # Log scores
             neptune_run['score'] = scores
+
+            # Save model
+            run_id = neptune_run.get_attribute('sys/id').fetch()
+            model_path = os.path.join('../trained_models', f'{run_id}.pkl')
+            with open(model_path, 'wb') as model_file:
+                pickle.dump(svd, model_file)
+            neptune_run['model/path'] = os.path.abspath(model_path)
         finally:
             neptune_run.stop()
         return scores['val_rmse']

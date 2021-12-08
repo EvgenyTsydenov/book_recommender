@@ -164,3 +164,4 @@ cython_debug/
 /goodreads/data_original/
 /recommender/data/
 /recommender/training_scripts/.neptune/
+/recommender/trained_models/
