@@ -84,6 +84,8 @@ class ObjectiveSVD(ObjectiveBase):
             self._user_ids_val.shape[0]
         neptune_run['data/users_count'] = len(self.user_cats.categories)
         neptune_run['data/books_count'] = len(self.item_cats.categories)
+        neptune_run['optuna/study_name'] = trial.study.study_name
+        neptune_run['optuna/trial_number'] = trial.number
 
         try:
             # Create model
