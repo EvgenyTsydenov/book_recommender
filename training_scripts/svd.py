@@ -35,10 +35,10 @@ class ObjectiveSVD(ObjectiveBase):
         super().__init__(ratings_train, ratings_val, user_ratings_scalers)
 
         # For training
-        self._interacts_train = coo_matrix((self._ratings_train_true,
+        self._interacts_train = coo_matrix((self._ratings_train_true.ravel(),
                                             (self._user_ids_train,
                                              self._item_ids_train)))
-        self._interacts_val = coo_matrix((self._ratings_val_true,
+        self._interacts_val = coo_matrix((self._ratings_val_true.ravel(),
                                           (self._user_ids_val,
                                            self._item_ids_val)))
 

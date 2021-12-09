@@ -58,15 +58,16 @@ class RecommenderSVD:
         # If there are not so many samples
         if samples_count <= self._chunk_size:
             return np.sum(self._user_embeds[user_ids, :]
-                          * self._item_embeds[:, work_ids].T, axis=1)
+                          * self._item_embeds[:, work_ids].T,
+                          axis=1, keepdims=True)
 
         # If there are many samples, we need to reduce memory consumption
-        result = np.zeros(samples_count)
+        result = np.zeros(shape=(samples_count, 1))
         chunks_count = math.ceil(samples_count / self._chunk_size)
         for chunk in np.array_split(range(samples_count), chunks_count):
             user_ids_chunk = user_ids[chunk]
             work_ids_chunk = work_ids[chunk]
             result[chunk] = np.sum(self._user_embeds[user_ids_chunk, :]
                                    * self._item_embeds[:, work_ids_chunk].T,
-                                   axis=1)
+                                   axis=1, keepdims=True)
         return result

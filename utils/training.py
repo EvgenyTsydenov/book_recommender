@@ -71,7 +71,8 @@ class ObjectiveBase(ABC):
             data={'cat_code': range(len(self.user_cats.categories))},
             index=self.user_cats.categories)
         scaler_pd = scaler_pd.join(cats_pd).sort_values('cat_code')
-        return np.hstack(scaler_pd['scale']), np.hstack(scaler_pd['mean'])
+        return np.hstack(scaler_pd['scale']).reshape(-1, 1), \
+               np.hstack(scaler_pd['mean']).reshape(-1, 1)
 
     def _prepare_data(self, data: pd.DataFrame) \
             -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -92,7 +93,7 @@ class ObjectiveBase(ABC):
         # Prepare result
         user_ids = data['user_id'].cat.codes.values
         item_ids = data['work_id'].cat.codes.values
-        ratings_true = data['rating_scaled'].values
+        ratings_true = data[['rating_scaled']].values
         return user_ids, item_ids, ratings_true
 
     def _get_categories(self, ratings_train: pd.DataFrame, column: str) \
