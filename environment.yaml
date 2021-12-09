@@ -17,6 +17,10 @@ dependencies:
   - neptune-client=0.13.3
   - optuna=2.10.0
   - pymysql=1.0.2
+  - graphviz=2.50.0
+  - pydot=1.4.2
+  - tensorflow=2.6.0
+  - neptune-tensorflow-keras=0.9.9
   - pip:
     - countryinfo==0.1.2
     - isbnlib==3.10.9
