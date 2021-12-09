@@ -1,6 +1,8 @@
+import multiprocessing
 import os
 import pickle
 import time
+from multiprocessing import Queue
 from typing import Dict, Tuple
 
 import neptune.new as neptune
@@ -19,6 +21,13 @@ import shared
 from models.gradient_descent import RecommenderGD
 from shared import NEPTUNE_API_KEY, NEPTUNE_PROJECT, RANDOM_SEED
 from utils.training import ObjectiveBase
+
+# Supress TensorFlow messages
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+# If the script is executed in parallel,
+# we need to change this per each process to avoid duplicated trials
+OPTUNA_RANDOM_SEED = RANDOM_SEED
 
 
 class ObjectiveGD(ObjectiveBase):
@@ -39,16 +48,18 @@ class ObjectiveGD(ObjectiveBase):
         # Call the base class
         super().__init__(ratings_train, ratings_val, user_ratings_scalers)
 
+        # For multiprocessing
+        self._queue = Queue()
+
     def __call__(self, trial: optuna.trial.Trial) -> float:
         """Objective function for hyperparameter tuning.
 
-        Training matrix factorization recommender based on the gradient
+        Train matrix factorization recommender based on the gradient
         descent.
 
         :param trial: optuna's trial object.
         :return: value of metric to optimize.
         """
-
         # Define params
         model_param = {
             'embed_size': trial.suggest_int('embed_size', 5, 100),
@@ -71,6 +82,11 @@ class ObjectiveGD(ObjectiveBase):
             'early_stopping_patience': 10,
             'batch_size': 8192
         }
+        optuna_params = {
+            'study_name': trial.study.study_name,
+            'trial_number': trial.number,
+            'random_seed': OPTUNA_RANDOM_SEED
+        }
 
         # Check duplication and skip if it's detected
         for old_trial in trial.study.trials:
@@ -79,6 +95,28 @@ class ObjectiveGD(ObjectiveBase):
             if old_trial.params == trial.params:
                 raise optuna.TrialPruned()
 
+        # The most reliable way to release GPU memory used by TensorFlow is to
+        # run the training in a separate process
+        process = multiprocessing.Process(
+            target=self._train_model,
+            args=(model_param, train_params, optimize_params, optuna_params))
+        process.start()
+
+        # Wait the training to finish
+        process.join()
+
+        # Get value of monitored metric
+        return self._queue.get()
+
+    def _train_model(self, model_param: dict, train_params: dict,
+                     optimize_params: dict, optuna_params: dict) -> None:
+        """Train matrix factorization model based on the gradient descent.
+
+        :param model_param: parameters defining model structure.
+        :param train_params: parameters for training process.
+        :param optimize_params: parameters optimizer.
+        :param optuna_params: parameters of optuna searcher.
+        """
         # For experiment tracking
         neptune_run = neptune.init(
             project=NEPTUNE_PROJECT, api_token=NEPTUNE_API_KEY, tags=['GD'],
@@ -91,6 +129,7 @@ class ObjectiveGD(ObjectiveBase):
         neptune_run['model'] = model_param
         neptune_run['training'] = train_params
         neptune_run['optimization'] = optimize_params
+        neptune_run['optuna'] = optuna_params
         neptune_run['random_seed'] = RANDOM_SEED
         neptune_run['data/work_ratings_train.csv'] \
             .track_files('../data/work_ratings_train.csv')
@@ -102,8 +141,6 @@ class ObjectiveGD(ObjectiveBase):
             self._user_ids_val.shape[0]
         neptune_run['data/users_count'] = len(self.user_cats.categories)
         neptune_run['data/books_count'] = len(self.item_cats.categories)
-        neptune_run['optuna/study_name'] = trial.study.study_name
-        neptune_run['optuna/trial_number'] = trial.number
 
         try:
 
@@ -195,7 +232,9 @@ class ObjectiveGD(ObjectiveBase):
 
         finally:
             neptune_run.stop()
-        return scores['val_rmse']
+
+        # To pass the value to the main process
+        self._queue.put(scores['val_rmse'])
 
     def _get_loss_func(self, loss_name: str) -> tf.keras.losses.Loss:
         """Create loss function.
@@ -243,8 +282,8 @@ if __name__ == '__main__':
                              database=os.environ['OPTUNA_DB_NAME'])
     storage = optuna.storages.RDBStorage(url=str(storage_url),
                                          engine_kwargs={'pool_recycle': 3600})
-    study_sampler = optuna.samplers.TPESampler(seed=RANDOM_SEED)
+    study_sampler = optuna.samplers.RandomSampler(seed=OPTUNA_RANDOM_SEED)
     study = optuna.create_study(sampler=study_sampler, direction='minimize',
                                 storage=storage, load_if_exists=True,
                                 study_name=study_name)
-    study.optimize(objective, n_trials=20)
+    study.optimize(objective, n_trials=10)
