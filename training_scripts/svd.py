@@ -56,7 +56,7 @@ class ObjectiveSVD(ObjectiveBase):
 
         # Check duplication and skip if it's detected
         for old_trial in trial.study.trials:
-            if old_trial.state != optuna.trial.TrialState.COMPLETE:
+            if old_trial.number == trial.number:
                 continue
             if old_trial.params == trial.params:
                 raise optuna.TrialPruned()
