@@ -22,7 +22,7 @@ from models.gradient_descent import RecommenderGD
 from shared import NEPTUNE_API_KEY, NEPTUNE_PROJECT, RANDOM_SEED
 from utils.training import ObjectiveBase
 
-# Supress TensorFlow messages
+# Suppress TensorFlow messages
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # If the script is executed in parallel,
