@@ -162,6 +162,9 @@ cython_debug/
 /book_crossing/data_prep/
 /goodreads/data_prep/
 /goodreads/data_original/
+/penguin_random_house/data_interm/
+/penguin_random_house/data_raw/
+/penguin_random_house/data_prep/
 /data/
 */.neptune/*
 /trained_models/
