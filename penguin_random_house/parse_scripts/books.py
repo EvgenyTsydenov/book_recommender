@@ -7,7 +7,7 @@ from tqdm import tqdm
 def parse_book(book_data: dict) -> dict:
     """Parse book core data."""
     info = {}
-    for param in ['isbn', 'title', 'onsale', 'price', 'format',
+    for param in ['isbn', 'title', 'onsale', 'price',
                   'language', 'pages', 'publisher']:
         info[param] = book_data.get(param)
     info['cover'] = f'https://images.randomhouse.com/cover/{info["isbn"]}'
@@ -83,8 +83,7 @@ def parse_works(works_data: list) -> list:
 def parse_content(content_data: dict) -> dict:
     """Extract long text data."""
     content = {}
-    for param in ['positioning', 'jacketquotes',
-                  'flapcopy', 'keynote', 'excerpt']:
+    for param in ['flapcopy', 'excerpt']:
         content[param] = content_data.get(param)
     return content
 
@@ -102,7 +101,7 @@ if __name__ == '__main__':
                 book_data = json.loads(book)
 
                 # Get core book data
-                info = parse_book(book_data)
+                info = parse_book(book_data['titles'][0])
 
                 # Parse relative info
                 embeds = {}
