@@ -21,6 +21,8 @@ dependencies:
   - pydot=1.4.2
   - tensorflow=2.6.0
   - neptune-tensorflow-keras=0.9.9
+  - treelib=1.6.1
+  - lxml=4.7.1
   - pip:
     - countryinfo==0.1.2
     - isbnlib==3.10.9
