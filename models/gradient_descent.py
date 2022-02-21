@@ -1,106 +1,140 @@
-from typing import Optional
+from typing import Optional, Tuple, Sequence
 
 import tensorflow as tf
 from tensorflow.keras import Input, Model
-from tensorflow.keras.layers import Embedding, Dot, Flatten, Add
+from tensorflow.keras.layers import Embedding, Dot, Flatten, Add, StringLookup
 from tensorflow.keras.regularizers import l2
 
 
 class RecommenderGD(tf.keras.Model):
-    """Matrix factorization recommender trained with gradient descent."""
+    """Collaborative filtering recommender using matrix factorization approach
+    based on gradient descent.
 
-    def __init__(self, users_count: int, books_count: int, random_seed: int,
-                 embed_size: int, l2_regularizer: float = 0, **kwargs):
-        """Create recommender.
+    :param embed_size: size of embeddings.
+    :param users: unique users.
+    :param items: unique items.
+    :param random_seed: random seed.
+    :param l2_penalty: penalty value for L2 regularization.
+    :param kwargs: additional arguments to tensorflow.keras.Model.
+    """
 
-        :param users_count: number of users.
-        :param books_count: number of books.
-        :param random_seed: random seed.
-        :param embed_size: size of embeddings.
-        :param l2_regularizer: value for L2 regularization.
-        :param kwargs: additional arguments to keras Model.
-        """
-        tf.random.set_seed(random_seed)
+    def __init__(self, embed_size: int, users: Sequence, items: Sequence,
+                 random_seed: Optional[int] = None,
+                 l2_penalty: Optional[float] = None, **kwargs) -> None:
+        if random_seed is not None:
+            tf.random.set_seed(random_seed)
         super().__init__(**kwargs)
-        self._l2_penalty = l2_regularizer
-        self._embed_size = embed_size
-        self._users_count = users_count
-        self._books_count = books_count
-        self._user_embedding = self._get_embed(
-            self._users_count, 'UserEmbedding')
-        self._book_embedding = self._get_embed(
-            self._books_count, 'BookEmbedding')
-        self._rating_flatten = Flatten(name='RatingValue')
-        self._dot_product = Dot(axes=2, name='DotProduct')
+        self.l2_penalty = l2_penalty
+        self.embed_size = embed_size
 
-    def _get_embed(self, items_count: int, name: Optional[str] = None):
+        # Layers
+        self._user_lookup = StringLookup(vocabulary=users, name='UserLookup')
+        self._item_lookup = StringLookup(vocabulary=items, name='ItemLookup')
+        self._flatten = Flatten(name='RatingValue')
+        self._dot_product = Dot(axes=2, name='EmbeddingProduct')
+        self._user_embedding = self._get_embed(
+            len(users), self.embed_size, 'UserEmbedding')
+        self._item_embedding = self._get_embed(
+            len(items), self.embed_size, 'ItemEmbedding')
+
+    def _get_embed(self, items_count: int, embed_size: int,
+                   name: Optional[str] = None) -> tf.keras.layers.Embedding:
         """Create embedding layer.
 
         :param items_count: number of items which embeddings to create.
+        :param embed_size: size of embeddings.
+        :param name: name of layer.
         :return: embedding layer.
         """
-        l2_reg = l2(self._l2_penalty) if self._l2_penalty > 0 else None
-        return Embedding(items_count, self._embed_size,
+        l2_reg = l2(self.l2_penalty) if self.l2_penalty else None
+        return Embedding(items_count, embed_size, name=name,
                          embeddings_initializer='he_normal',
-                         embeddings_regularizer=l2_reg, name=name)
+                         embeddings_regularizer=l2_reg)
 
-    def call(self, inputs, **kwargs):
+    def call(self, inputs: Tuple[Sequence, Sequence], **kwargs) -> tf.Tensor:
         """Call the model.
 
-        :param inputs: model inputs as user_id and book_id.
+        :param inputs: model inputs as user_id and item_id.
         :return: model output.
         """
-        user_ids, work_ids = inputs
-        user_embed = self._user_embedding(user_ids)
-        book_embed = self._book_embedding(work_ids)
-        product = self._dot_product([user_embed, book_embed])
-        return self._rating_flatten(product)
+        user_ids, item_ids = inputs
+        user_indices = self._user_lookup(user_ids)
+        item_indices = self._item_lookup(item_ids)
+        user_embeds = self._user_embedding(user_indices)
+        item_embeds = self._item_embedding(item_indices)
+        product = self._dot_product([user_embeds, item_embeds])
+        return self._flatten(product)
 
     def build_graph(self) -> tf.keras.Model:
         """Compute model graph for visualization.
 
         :return: model.
         """
-        user_input = Input(shape=(1,), name='UserIndex')
-        book_input = Input(shape=(1,), name='BookIndex')
-        return Model(inputs=(user_input, book_input),
-                     outputs=self.call((user_input, book_input)))
+        user_input = Input(shape=(1,), name='UserID')
+        item_input = Input(shape=(1,), name='ItemID')
+        return Model(inputs=(user_input, item_input),
+                     outputs=self.call((user_input, item_input)),
+                     name=self.name)
 
 
 class RecommenderGDBiased(RecommenderGD):
-    """Matrix factorization recommender trained with gradient descent.
+    """Collaborative filtering recommender using matrix factorization approach
+    based on the gradient descent.
 
     Uses embeddings with users' and items' biases.
+
+    :param embed_size: size of embeddings.
+    :param users: unique users.
+    :param items: unique items.
+    :param random_seed: random seed.
+    :param l2_penalty: penalty value for L2 regularization.
+    :param kwargs: additional arguments to tensorflow.keras.Model.
     """
 
-    def __init__(self, users_count: int, books_count: int, random_seed: int,
-                 embed_size: int, l2_regularizer: float = 0, **kwargs):
-        """Create recommender.
+    def __init__(self, embed_size: int, users: Sequence, items: Sequence,
+                 random_seed: Optional[int] = None,
+                 l2_penalty: Optional[float] = None, **kwargs) -> None:
+        super().__init__(embed_size, users, items, random_seed,
+                         l2_penalty, **kwargs)
 
-        :param users_count: number of users.
-        :param books_count: number of books.
-        :param random_seed: random seed.
-        :param embed_size: size of embeddings.
-        :param l2_regularizer: value for L2 regularization.
-        :param kwargs: additional arguments to keras Model.
-        """
-        super().__init__(users_count, books_count, random_seed,
-                         embed_size, l2_regularizer, **kwargs)
-        self._book_bias = Embedding(self._books_count, 1, name='BookBias')
-        self._user_bias = Embedding(self._users_count, 1, name='UserBias')
-        self._rating_biased = Add(name='BiasedRating')
+        # Additional layers
+        self._user_bias = self._get_embed(len(users), 1, 'UserBias')
+        self._item_bias = self._get_embed(len(items), 1, 'ItemBias')
+        self._component_sum = Add(name='ComponentSum')
+        self._global_bias = BiasLayer(name='GlobalBias')
 
-    def call(self, inputs, **kwargs):
+    def call(self, inputs: Tuple[Sequence, Sequence], **kwargs) -> tf.Tensor:
         """Call the model.
 
-        :param inputs: model inputs as user_id and book_id.
+        :param inputs: model inputs as user_id and item_id.
         :return: model output.
         """
-        user_ids, work_ids = inputs
-        user_embed = self._user_embedding(user_ids)
-        book_embed = self._book_embedding(work_ids)
-        user_bias = self._user_bias(user_ids)
-        book_bias = self._book_bias(work_ids)
-        product = self._dot_product([user_embed, book_embed])
-        biased_rating = self._rating_biased([product, user_bias, book_bias])
-        return self._rating_flatten(biased_rating)
+        user_ids, item_ids = inputs
+        user_indices = self._user_lookup(user_ids)
+        user_embed = self._user_embedding(user_indices)
+        item_indices = self._item_lookup(item_ids)
+        item_embed = self._item_embedding(item_indices)
+        product = self._dot_product([user_embed, item_embed])
+        user_bias = self._user_bias(user_indices)
+        item_bias = self._item_bias(item_indices)
+        component_sum = self._component_sum([product, user_bias, item_bias])
+        biased_rating = self._global_bias(component_sum)
+        return self._flatten(biased_rating)
+
+
+class BiasLayer(tf.keras.layers.Layer):
+    """Layer that adds a value to the input."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.bias = self.add_weight('bias', shape=(1, 1),
+                                    initializer='random_uniform',
+                                    trainable=True)
+
+    def call(self, inputs: tf.Tensor, **kwargs) -> tf.Tensor:
+        """Call the layer.
+
+        :param inputs: layer inputs.
+        :return: layer output.
+        """
+        return inputs + self.bias
