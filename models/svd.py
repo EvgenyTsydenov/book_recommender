@@ -1,73 +1,101 @@
-import math
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Sequence
 
 import numpy as np
-import scipy.sparse
-from sklearn.decomposition import TruncatedSVD
+import pandas as pd
+from pandas import CategoricalDtype
+from scipy.sparse import coo_matrix
+from scipy.sparse.linalg import svds
+from tqdm import tqdm
+
+from models.mixins import RatingScaleMixin
 
 
-class RecommenderSVD:
-    """Collaborative filtering recommender based on SVD."""
+class RecommenderSVD(RatingScaleMixin):
+    """Collaborative filtering recommender using matrix factorization approach
+    based on Singular Value Decomposition.
 
-    def __init__(self, random_seed: Optional[int] = None):
-        """Create SVD recommender.
+    :param embed_size: size of embeddings or dimension of the latent space.
+    :param rating_normalization: which rating normalization strategy
+    to use ("mean", "z-score", or None)
+    """
 
-        :param random_seed: random seed.
-        """
-        self._random_seed = random_seed
-        self._chunk_size = 1000000
-        self._user_embeds = None
-        self._item_embeds = None
+    def __init__(self, embed_size: int = 100,
+                 rating_normalization: Optional[str] = 'mean') -> None:
+        # Save arguments
+        super().__init__(rating_normalization=rating_normalization)
+        self.embed_size = embed_size
+        self.rating_normalization = rating_normalization
 
-    def fit(self, interactions: scipy.sparse.coo_matrix,
-            embed_size: int = 100) -> None:
+        # To convert IDs of users and items into their indices
+        self._item_categories = None
+        self._user_categories = None
+
+        # Embeddings
+        self._user_embeddings = None
+        self._item_embeddings = None
+
+    def fit(self, x: Tuple[Sequence, Sequence], y: Sequence) -> None:
         """Build user and item embeddings.
 
-        :param interactions: interaction matrix.
-        :param embed_size: size of embeddings or dimension of the latent space.
+        :param x: values of user_id and item_id.
+        :param y: ratings for corresponding user_id and item_id in `x`.
         """
-        # Create model
-        svd = TruncatedSVD(n_components=embed_size,
-                           random_state=self._random_seed)
+        # Preprocess ratings
+        user_ids = pd.Series(x[0], dtype='category')
+        item_ids = pd.Series(x[1], dtype='category')
+        self._user_categories = CategoricalDtype(user_ids.cat.categories)
+        self._item_categories = CategoricalDtype(item_ids.cat.categories)
 
-        # Train
-        transformed = svd.fit_transform(interactions)
+        # To avoid losing zero ratings when converting into sparse matrix
+        ratings = np.array(y, dtype=np.float64).ravel()
+        ratings[ratings == 0] = np.finfo(float).eps
 
-        # Extract X, Sigma, and YT
-        x = transformed / svd.singular_values_
-        sigma = np.diag(svd.singular_values_)
-        yt = svd.components_
+        # Build the interaction matrix
+        interactions = coo_matrix(
+            (ratings, (user_ids.cat.codes, item_ids.cat.codes))).tocsr()
+
+        # Scale ratings
+        self._fit_scaler(interactions)
+        self._scale_ratings(interactions)
+
+        # Compute svd decomposition
+        u, sigma, vt = svds(interactions, k=self.embed_size)
 
         # Compose user and item embeddings
-        sigma_sqrt = np.sqrt(sigma)
-        self._user_embeds = np.dot(x, sigma_sqrt)
-        self._item_embeds = np.dot(sigma_sqrt, yt)
+        sigma_sqrt = np.sqrt(np.eye(self.embed_size) * sigma)
+        self._user_embeddings = np.dot(u, sigma_sqrt)
+        self._item_embeddings = np.dot(sigma_sqrt, vt)
 
-    def predict(self, user_work_ids: Tuple[np.ndarray, np.ndarray]) \
-            -> np.ndarray:
+    def predict(self, x: Tuple[Sequence, Sequence],
+                chunk_size: Optional[int] = 500_000,
+                progress_bar: bool = False) -> np.ndarray:
         """Calculate predicted rating.
 
-        :param user_work_ids: user and work ids which ratings to predict.
+        :param x: values of user_id and item_id.
+        :param chunk_size: perform predictions in chunks to reduce memory
+        consumption.
+        :param progress_bar: if to show progress bar.
         :return: predicted ratings.
         """
-        if (self._user_embeds is None) or (self._item_embeds is None):
-            raise ValueError('The model must be fitted before predicting.')
-        user_ids, work_ids = user_work_ids
-        samples_count = user_ids.shape[0]
+        # Preprocess users, items
+        user_indices = pd.Series(x[0], dtype=self._user_categories).cat.codes
+        item_indices = pd.Series(x[1], dtype=self._item_categories).cat.codes
 
-        # If there are not so many samples
-        if samples_count <= self._chunk_size:
-            return np.sum(self._user_embeds[user_ids, :]
-                          * self._item_embeds[:, work_ids].T,
-                          axis=1, keepdims=True)
+        # Split in chunks
+        samples_count = len(user_indices)
+        chunk_size = samples_count if not chunk_size \
+            else min(chunk_size, samples_count)
+        predictions = np.zeros(samples_count)
+        for index in tqdm(range(0, samples_count, chunk_size),
+                          disable=not progress_bar):
+            # Get chunk of data
+            slice_ = slice(index, min(index + chunk_size, samples_count))
+            user_indices_chunk = user_indices[slice_]
+            item_indices_chunk = item_indices[slice_]
 
-        # If there are many samples, we need to reduce memory consumption
-        result = np.zeros(shape=(samples_count, 1))
-        chunks_count = math.ceil(samples_count / self._chunk_size)
-        for chunk in np.array_split(range(samples_count), chunks_count):
-            user_ids_chunk = user_ids[chunk]
-            work_ids_chunk = work_ids[chunk]
-            result[chunk] = np.sum(self._user_embeds[user_ids_chunk, :]
-                                   * self._item_embeds[:, work_ids_chunk].T,
-                                   axis=1, keepdims=True)
-        return result
+            # Calculate ratings
+            predictions[slice_] = np.sum(
+                self._user_embeddings[user_indices_chunk, :]
+                * self._item_embeddings[:, item_indices_chunk].T,
+                axis=1)
+        return self._unscale_ratings(predictions, user_indices)
