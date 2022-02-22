@@ -7,4 +7,4 @@ services:
         MYSQL_ROOT_PASSWORD: ${OPTUNA_DB_PASSWORD}
         MYSQL_DATABASE: ${OPTUNA_DB_NAME}
       volumes:
-        - ./data/optuna_db:/var/lib/mysql
+        - ./optuna_db:/var/lib/mysql

@@ -168,3 +168,4 @@ cython_debug/
 /data/
 */.neptune/*
 /trained_models/
+/optuna_db/
