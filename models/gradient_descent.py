@@ -2,7 +2,8 @@ from typing import Optional, Tuple, Sequence
 
 import tensorflow as tf
 from tensorflow.keras import Input, Model
-from tensorflow.keras.layers import Embedding, Dot, Flatten, Add, StringLookup
+from tensorflow.keras.layers import Embedding, Dot, Flatten, Add
+from tensorflow.keras.layers.experimental.preprocessing import StringLookup
 from tensorflow.keras.regularizers import l2
 
 
@@ -47,7 +48,7 @@ class RecommenderGD(tf.keras.Model):
         :return: embedding layer.
         """
         l2_reg = l2(self.l2_penalty) if self.l2_penalty else None
-        return Embedding(items_count, embed_size, name=name,
+        return Embedding(items_count + 1, embed_size, name=name,
                          embeddings_initializer='he_normal',
                          embeddings_regularizer=l2_reg)
 
