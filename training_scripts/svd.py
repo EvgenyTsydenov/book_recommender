@@ -1,46 +1,49 @@
 import os
 import pickle
 import time
-from typing import Dict, Tuple
+from typing import Optional
 
 import neptune.new as neptune
 import optuna
 import pandas as pd
-from scipy.sparse import coo_matrix
+from dotenv import load_dotenv
+from sklearn.metrics import mean_squared_error as mse, \
+    mean_absolute_error as mae
 from sqlalchemy.engine import URL
 
-# noinspection PyUnresolvedReferences
-import shared
 from models.svd import RecommenderSVD
-from shared import NEPTUNE_API_KEY, NEPTUNE_PROJECT, RANDOM_SEED
-from utils.training import ObjectiveBase
+from optuna_utils import OptunaObjective
 
 
-class ObjectiveSVD(ObjectiveBase):
-    """Objective to minimize for hyperparameter tuning
+class ObjectiveSVD(OptunaObjective):
+    """Objective to minimize for hyperparameter tuning.
 
-    Matrix factorization recommender based on SVD.
+    This tunes collaborative filtering recommender that uses matrix
+    factorization approach based on Singular Value Decomposition.
+
+    :param train_data_path: path to data for training.
+    :param val_data_path: path to data for validation.
+    :param neptune_project_name: name of project in neptune.ai.
+    :param neptune_api_key: api key to access neptune.ai.
+    :param model_path: folder path to store built model.
+    :param random_seed: random seed.
     """
 
-    def __init__(self, ratings_train: pd.DataFrame,
-                 ratings_val: pd.DataFrame,
-                 user_ratings_scalers: Dict[str, Tuple[float, float]]):
-        """Create an objective.
-
-        :param ratings_train: user ratings for training.
-        :param ratings_val: user ratings for validation.
-        :param user_ratings_scalers: standard scaler parameters.
-        """
-        # Call the base class
-        super().__init__(ratings_train, ratings_val, user_ratings_scalers)
-
-        # For training
-        self._interacts_train = coo_matrix((self._ratings_train_true.ravel(),
-                                            (self._user_ids_train,
-                                             self._item_ids_train)))
-        self._interacts_val = coo_matrix((self._ratings_val_true.ravel(),
-                                          (self._user_ids_val,
-                                           self._item_ids_val)))
+    def __init__(self, train_data_path: str, val_data_path: str,
+                 neptune_project_name: str, neptune_api_key: str,
+                 random_seed: Optional[int] = None,
+                 model_path: Optional[str] = None) -> None:
+        super().__init__(train_data_path, val_data_path, neptune_project_name,
+                         neptune_api_key, random_seed, model_path)
+        self._train_data = pd.read_csv(self.train_data_path)
+        self._val_data = pd.read_csv(self.val_data_path)
+        self._source_files = ['../models/svd.py', '../models/mixins.py',
+                              'svd.py']
+        self._tags = ['model-based', 'svd', 'collaborative filtering']
+        self._description = 'Optuna tunes collaborative filtering ' \
+                            'recommender that uses matrix factorization ' \
+                            'approach based on Singular Value Decomposition.'
+        self._name = 'SVD-based matrix factorization recommender'
 
     def __call__(self, trial: optuna.trial.Trial) -> float:
         """Objective function for hyperparameter tuning.
@@ -48,106 +51,97 @@ class ObjectiveSVD(ObjectiveBase):
         :param trial: optuna's trial object.
         :return: value of metric to optimize.
         """
-
         # Define params
         model_param = {
-            'embed_size': trial.suggest_int('embed_size', 5, 1000, log=True)
+            'embed_size': trial.suggest_int('embed_size', 5, 100),
+            'rating_normalization': trial.suggest_categorical(
+                'rating_normalization', ['mean', 'z-score'])
         }
 
-        # Check duplication and skip if it's detected
-        for old_trial in trial.study.trials:
-            if old_trial.number == trial.number:
-                continue
-            if old_trial.params == trial.params:
-                raise optuna.TrialPruned()
+        # If such trial already exists, prune it
+        if self._is_duplicated_trial(trial):
+            raise optuna.TrialPruned
 
         # For experiment tracking
-        neptune_run = neptune.init(project=NEPTUNE_PROJECT,
-                                   api_token=NEPTUNE_API_KEY, tags=['SVD'],
-                                   source_files=['../models/svd.py', 'svd.py'],
-                                   description='Optuna tunes hyperparameters',
-                                   capture_stdout=False, capture_stderr=False,
-                                   capture_hardware_metrics=False)
+        neptune_run = neptune.init(
+            project=self.neptune_project, api_token=self.neptune_key,
+            tags=self._tags, description=self._description, name=self._name,
+            source_files=self._source_files, capture_stdout=False,
+            capture_stderr=False, capture_hardware_metrics=False)
 
-        # Log model params
+        # Log params and data info
         neptune_run['model'] = model_param
-        neptune_run['random_seed'] = RANDOM_SEED
-
-        # Log data params
-        neptune_run['data/work_ratings_train.csv'] \
-            .track_files('../data/work_ratings_train.csv')
-        neptune_run['data/work_ratings_val.csv'] \
-            .track_files('../data/work_ratings_val.csv')
-        neptune_run['data/samples_count_train'] = \
-            self._user_ids_train.shape[0]
-        neptune_run['data/samples_count_val'] = \
-            self._user_ids_val.shape[0]
-        neptune_run['data/users_count'] = len(self.user_cats.categories)
-        neptune_run['data/books_count'] = len(self.item_cats.categories)
         neptune_run['optuna/study_name'] = trial.study.study_name
         neptune_run['optuna/trial_number'] = trial.number
+        neptune_run['data/train_data'].track_files(self.train_data_path)
+        neptune_run['data/val_data'].track_files(self.val_data_path)
+        neptune_run['data/train_samples_count'] = len(self._train_data)
+        neptune_run['data/val_samples_count'] = len(self._val_data)
+        neptune_run['data/users_count'] = \
+            len(self._train_data['user_id'].unique())
+        neptune_run['data/works_count'] = \
+            len(self._train_data['work_id'].unique())
 
         try:
             # Create model
-            svd = RecommenderSVD(RANDOM_SEED)
+            svd = RecommenderSVD(**model_param)
 
             # Train
             start_time = time.time()
-            svd.fit(self._interacts_train, model_param['embed_size'])
+            svd.fit(x=(self._train_data['user_id'],
+                       self._train_data['work_id']),
+                    y=self._train_data['rating'])
             end_time = time.time()
-            neptune_run['training/time_min'] = \
+            neptune_run['training/time_minutes'] = \
                 round((end_time - start_time) / 60, 2)
 
-            # Evaluate with train data
-            scores = {}
-            ratings_train_predict = svd.predict((self._user_ids_train,
-                                                 self._item_ids_train))
-            ratings_train_predict_unscaled = self._unscale(
-                self._user_ids_train, ratings_train_predict)
-            scores.update(self.get_metrics(self._ratings_train_true,
-                                           ratings_train_predict))
-            scores.update(self.get_metrics(self._ratings_train_true_unscaled,
-                                           ratings_train_predict_unscaled,
-                                           'train_unscaled'))
-
-            # Evaluate with validation data
-            ratings_val_predict = svd.predict((self._user_ids_val,
-                                               self._item_ids_val))
-            ratings_val_predict_unscaled = self._unscale(
-                self._user_ids_val, ratings_val_predict)
-            scores.update(self.get_metrics(self._ratings_val_true,
-                                           ratings_val_predict, 'val'))
-            scores.update(self.get_metrics(self._ratings_val_true_unscaled,
-                                           ratings_val_predict_unscaled,
-                                           'val_unscaled'))
-
-            # Log scores
-            neptune_run['score'] = scores
+            # Evaluate
+            train_predict = svd.predict((self._train_data['user_id'],
+                                         self._train_data['work_id']))
+            val_predict = svd.predict((self._val_data['user_id'],
+                                       self._val_data['work_id']))
+            score = {
+                'train_rmse': mse(self._train_data['rating'],
+                                  train_predict, squared=False),
+                'train_mae': mae(self._train_data['rating'], train_predict),
+                'val_rmse': mse(self._val_data['rating'],
+                                val_predict, squared=False),
+                'val_mae': mae(self._val_data['rating'], val_predict)
+            }
+            neptune_run['score'] = score
 
             # Save model
-            run_id = neptune_run.get_attribute('sys/id').fetch()
-            model_path = os.path.join('../trained_models', f'{run_id}.pkl')
-            with open(model_path, 'wb') as model_file:
-                pickle.dump(svd, model_file)
-            neptune_run['model/path'] = os.path.abspath(model_path)
+            if self.model_path:
+                run_id = neptune_run.get_attribute('sys/id').fetch()
+                model_path = os.path.join(self.model_path, f'{run_id}.pkl')
+                with open(model_path, 'wb') as model_file:
+                    pickle.dump(svd, model_file)
+                neptune_run['model/path'] = os.path.abspath(model_path)
         finally:
             neptune_run.stop()
-        return scores['val_rmse']
+        return score['val_rmse']
 
 
 if __name__ == '__main__':
-    # Load data
-    work_ratings_train = pd.read_csv(
-        os.path.join('..', 'data', 'work_ratings_train.csv'))
-    work_ratings_val = pd.read_csv(
-        os.path.join('..', 'data', 'work_ratings_val.csv'))
-    path_scaler = os.path.join('..', 'data', 'user_ratings_scalers.pkl')
-    with open(path_scaler, 'rb') as file:
-        scalers = pickle.load(file)
+    # Load environment variables
+    load_dotenv()
 
-    # Start tuning
-    objective = ObjectiveSVD(work_ratings_train, work_ratings_val, scalers)
+    # Define params
     study_name = 'svd'
+    trials_count = 15
+
+    # If the script is executed in parallel,
+    # we need to change this per each process to avoid duplicated trials
+    optuna_random_seed = int(os.environ['RANDOM_SEED'])
+
+    # Create objective and start tuning
+    objective = ObjectiveSVD(
+        train_data_path=os.path.join('..', 'data', 'work_ratings_train.csv'),
+        val_data_path=os.path.join('..', 'data', 'work_ratings_val.csv'),
+        neptune_project_name=os.environ['NEPTUNE_PROJECT'],
+        neptune_api_key=os.environ['NEPTUNE_API_KEY'],
+        random_seed=int(os.environ['RANDOM_SEED']),
+        model_path=os.path.join('..', 'trained_models'))
     storage_url = URL.create(drivername=os.environ['OPTUNA_DB_DRIVER'],
                              username=os.environ['OPTUNA_DB_USER'],
                              password=os.environ['OPTUNA_DB_PASSWORD'],
@@ -156,8 +150,8 @@ if __name__ == '__main__':
                              database=os.environ['OPTUNA_DB_NAME'])
     storage = optuna.storages.RDBStorage(url=str(storage_url),
                                          engine_kwargs={'pool_recycle': 3600})
-    study_sampler = optuna.samplers.TPESampler(seed=RANDOM_SEED)
+    study_sampler = optuna.samplers.TPESampler(seed=optuna_random_seed)
     study = optuna.create_study(sampler=study_sampler, direction='minimize',
                                 storage=storage, load_if_exists=True,
                                 study_name=study_name)
-    study.optimize(objective, n_trials=20)
+    study.optimize(objective, n_trials=trials_count)

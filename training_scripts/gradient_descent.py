@@ -1,14 +1,12 @@
-import multiprocessing
 import os
-import pickle
 import time
-from multiprocessing import Queue
-from typing import Dict, Tuple
+from typing import Optional
 
 import neptune.new as neptune
 import optuna
 import pandas as pd
 import tensorflow as tf
+from dotenv import load_dotenv
 from neptune.new.integrations.tensorflow_keras import NeptuneCallback
 from sqlalchemy.engine import URL
 from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
@@ -16,46 +14,44 @@ from tensorflow.keras.losses import MeanSquaredError, Huber
 from tensorflow.keras.metrics import RootMeanSquaredError, MeanAbsoluteError
 from tensorflow.keras.optimizers import Adam
 
-# noinspection PyUnresolvedReferences
-import shared
 from models.gradient_descent import RecommenderGD
-from shared import NEPTUNE_API_KEY, NEPTUNE_PROJECT, RANDOM_SEED
-from utils.training import ObjectiveBase
-
-# Suppress TensorFlow messages
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
-# If the script is executed in parallel,
-# we need to change this per each process to avoid duplicated trials
-OPTUNA_RANDOM_SEED = RANDOM_SEED
+from optuna_utils import OptunaObjective
 
 
-class ObjectiveGD(ObjectiveBase):
+class ObjectiveGD(OptunaObjective):
     """Objective to minimize for hyperparameter tuning.
 
-    Matrix factorization recommender optimized with gradient descent.
+    This tunes collaborative filtering recommender that uses matrix
+    factorization approach optimized with gradient descent.
+
+    :param train_data_path: path to data for training.
+    :param val_data_path: path to data for validation.
+    :param neptune_project_name: name of project in neptune.ai.
+    :param neptune_api_key: api key to access neptune.ai.
+    :param model_path: folder path to store built model.
+    :param random_seed: random seed.
     """
 
-    def __init__(self, ratings_train: pd.DataFrame,
-                 ratings_val: pd.DataFrame,
-                 user_ratings_scalers: Dict[str, Tuple[float, float]]):
-        """Create an objective.
-
-        :param ratings_train: user ratings for training.
-        :param ratings_val: user ratings for validation.
-        :param user_ratings_scalers: standard scaler parameters.
-        """
-        # Call the base class
-        super().__init__(ratings_train, ratings_val, user_ratings_scalers)
-
-        # For multiprocessing
-        self._queue = Queue()
+    def __init__(self, train_data_path: str, val_data_path: str,
+                 neptune_project_name: str, neptune_api_key: str,
+                 random_seed: Optional[int] = None,
+                 model_path: Optional[str] = None) -> None:
+        super().__init__(train_data_path, val_data_path, neptune_project_name,
+                         neptune_api_key, random_seed, model_path)
+        dtypes = {'user_id': str, 'work_id': str}
+        self._train_data = pd.read_csv(self.train_data_path, dtype=dtypes)
+        self._val_data = pd.read_csv(self.val_data_path, dtype=dtypes)
+        self._source_files = ['../models/gradient_descent.py',
+                              'gradient_descent.py']
+        self._tags = ['model-based', 'gradient descent',
+                      'collaborative filtering']
+        self._description = 'Optuna tunes collaborative filtering ' \
+                            'recommender that uses matrix factorization ' \
+                            'approach optimized with gradient descent.'
+        self._name = 'GD-optimized matrix factorization recommender'
 
     def __call__(self, trial: optuna.trial.Trial) -> float:
         """Objective function for hyperparameter tuning.
-
-        Train matrix factorization recommender based on the gradient
-        descent.
 
         :param trial: optuna's trial object.
         :return: value of metric to optimize.
@@ -63,84 +59,48 @@ class ObjectiveGD(ObjectiveBase):
         # Define params
         model_param = {
             'embed_size': trial.suggest_int('embed_size', 5, 100),
-            'l2_value': trial.suggest_loguniform('l2_value', 1e-15, 1e-2),
+            'l2_penalty': trial.suggest_loguniform('l2_penalty', 1e-15, 1e-1),
+            'random_seed': self.random_seed
         }
-        optimize_params = {
+        train_params = {
+            'epoch_count': 100,
+            'early_stopping': True,
+            'early_stopping_patience': 10,
+            'batch_size': 8192,
             'loss': 'huber',
             'optimizer': 'adam',
             'lr_init': 3e-4,
             'lr_scheduler': 'plateau',
             'lr_reduce_factor': 0.2,
-            'lr_reduce_min_delta': 1e-9,
+            'lr_reduce_min_delta': 1e-4,
             'lr_reduce_min_lr': 1e-6,
             'lr_reduce_patience': 3
         }
-        train_params = {
-            'device': 'GPU:0',
-            'epoch_count': 100,
-            'early_stopping': True,
-            'early_stopping_patience': 10,
-            'batch_size': 8192
-        }
-        optuna_params = {
-            'study_name': trial.study.study_name,
-            'trial_number': trial.number,
-            'random_seed': OPTUNA_RANDOM_SEED
-        }
 
-        # Check duplication and skip if it's detected
-        for old_trial in trial.study.trials:
-            if old_trial.number == trial.number:
-                continue
-            if old_trial.params == trial.params:
-                raise optuna.TrialPruned()
+        # If such trial already exists, prune it
+        if self._is_duplicated_trial(trial):
+            raise optuna.TrialPruned
 
-        # The most reliable way to release GPU memory used by TensorFlow is to
-        # run the training in a separate process
-        process = multiprocessing.Process(
-            target=self._train_model,
-            args=(model_param, train_params, optimize_params, optuna_params))
-        process.start()
-
-        # Wait the training to finish
-        process.join()
-
-        # Get value of monitored metric
-        return self._queue.get()
-
-    def _train_model(self, model_param: dict, train_params: dict,
-                     optimize_params: dict, optuna_params: dict) -> None:
-        """Train matrix factorization model based on the gradient descent.
-
-        :param model_param: parameters defining model structure.
-        :param train_params: parameters for training process.
-        :param optimize_params: parameters optimizer.
-        :param optuna_params: parameters of optuna searcher.
-        """
         # For experiment tracking
         neptune_run = neptune.init(
-            project=NEPTUNE_PROJECT, api_token=NEPTUNE_API_KEY, tags=['GD'],
-            description='Optuna tunes hyperparameters', capture_stdout=False,
-            capture_stderr=False, capture_hardware_metrics=False,
-            source_files=['../models/gradient_descent.py',
-                          'gradient_descent.py'])
+            project=self.neptune_project, api_token=self.neptune_key,
+            tags=self._tags, description=self._description, name=self._name,
+            source_files=self._source_files, capture_stdout=False,
+            capture_stderr=False, capture_hardware_metrics=False)
 
-        # Log params
+        # Log params and data info
         neptune_run['model'] = model_param
         neptune_run['training'] = train_params
-        neptune_run['optimization'] = optimize_params
-        neptune_run['optuna'] = optuna_params
-        neptune_run['random_seed'] = RANDOM_SEED
-        neptune_run['data/work_ratings_train.csv'] \
-            .track_files('../data/work_ratings_train.csv')
-        neptune_run['data/work_ratings_val.csv'] \
-            .track_files('../data/work_ratings_val.csv')
-        neptune_run['data/samples_count_train'] = \
-            self._user_ids_train.shape[0]
-        neptune_run['data/samples_count_val'] = \
-            self._user_ids_val.shape[0]
-        neptune_run['data/users_count'] = len(self.user_cats.categories)
-        neptune_run['data/books_count'] = len(self.item_cats.categories)
+        neptune_run['optuna/study_name'] = trial.study.study_name
+        neptune_run['optuna/trial_number'] = trial.number
+        neptune_run['data/train_data'].track_files(self.train_data_path)
+        neptune_run['data/val_data'].track_files(self.val_data_path)
+        neptune_run['data/train_samples_count'] = len(self._train_data)
+        neptune_run['data/val_samples_count'] = len(self._val_data)
+        neptune_run['data/users_count'] = \
+            len(self._train_data['user_id'].unique())
+        neptune_run['data/works_count'] = \
+            len(self._train_data['work_id'].unique())
 
         try:
 
@@ -155,125 +115,115 @@ class ObjectiveGD(ObjectiveBase):
                     patience=train_params['early_stopping_patience'],
                     restore_best_weights=True)
                 callbacks.append(er_stop)
-            if optimize_params['lr_scheduler'] == 'plateau':
+            if train_params['lr_scheduler'] == 'plateau':
                 lr_sch = ReduceLROnPlateau(
-                    factor=optimize_params['lr_reduce_factor'],
-                    min_lr=optimize_params['lr_reduce_min_lr'],
-                    min_delta=optimize_params['lr_reduce_min_delta'],
-                    patience=optimize_params['lr_reduce_patience'])
+                    factor=train_params['lr_reduce_factor'],
+                    min_lr=train_params['lr_reduce_min_lr'],
+                    min_delta=train_params['lr_reduce_min_delta'],
+                    patience=train_params['lr_reduce_patience'])
                 callbacks.append(lr_sch)
 
-            with tf.device(f'/{train_params["device"]}'):
+            # Create model
+            model = RecommenderGD(users=self._train_data['user_id'].unique(),
+                                  items=self._train_data['work_id'].unique(),
+                                  **model_param)
 
-                # Create model
-                recommender = RecommenderGD(
-                    users_count=len(self.user_cats.categories),
-                    books_count=len(self.item_cats.categories),
-                    embed_size=model_param['embed_size'],
-                    l2_regularizer=model_param['l2_value'],
-                    random_seed=RANDOM_SEED)
+            # Compile
+            optimizer = self._get_optimizer(name=train_params['optimizer'],
+                                            lr_init=train_params['lr_init'])
+            loss = self._get_loss(train_params['loss'])
+            model.compile(loss=loss, optimizer=optimizer,
+                          metrics=[RootMeanSquaredError(),
+                                   MeanAbsoluteError()])
 
-                # Compile
-                recommender.compile(
-                    loss=self._get_loss_func(optimize_params['loss']),
-                    optimizer=self._get_optimizer(
-                        optimizer_name=optimize_params['optimizer'],
-                        lr_init=optimize_params['lr_init']),
-                    metrics=[RootMeanSquaredError(), MeanAbsoluteError()])
-
-                # Train
-                start_time = time.time()
-                history = recommender.fit(
-                    x=[self._user_ids_train, self._item_ids_train],
-                    y=self._ratings_train_true,
-                    epochs=train_params['epoch_count'],
-                    validation_data=([self._user_ids_val, self._item_ids_val],
-                                     self._ratings_val_true),
-                    batch_size=train_params['batch_size'],
-                    callbacks=callbacks)
-                end_time = time.time()
-                neptune_run['training/time_min'] = \
-                    round((end_time - start_time) / 60, 2)
-
-                # Predict
-                ratings_train_predict = recommender.predict(
-                    [self._user_ids_train, self._item_ids_train],
-                    batch_size=8192)
-                ratings_val_predict = recommender.predict(
-                    (self._user_ids_val, self._item_ids_val),
-                    batch_size=8192)
+            # Train
+            start_time = time.time()
+            history = model.fit(
+                x=(self._train_data['user_id'], self._train_data['work_id']),
+                y=self._train_data['rating'], callbacks=callbacks,
+                epochs=train_params['epoch_count'],
+                validation_data=((self._val_data['user_id'],
+                                  self._val_data['work_id']),
+                                 self._val_data['rating']),
+                batch_size=train_params['batch_size'])
+            end_time = time.time()
+            neptune_run['training/time_minutes'] = \
+                round((end_time - start_time) / 60, 2)
 
             # Evaluate
-            scores = {}
-            ratings_train_predict_unscaled = self._unscale(
-                self._user_ids_train, ratings_train_predict)
-            scores.update(self.get_metrics(self._ratings_train_true,
-                                           ratings_train_predict))
-            scores.update(self.get_metrics(self._ratings_train_true_unscaled,
-                                           ratings_train_predict_unscaled,
-                                           'train_unscaled'))
-            ratings_val_predict_unscaled = self._unscale(
-                self._user_ids_val, ratings_val_predict)
-            scores.update(self.get_metrics(self._ratings_val_true,
-                                           ratings_val_predict, 'val'))
-            scores.update(self.get_metrics(self._ratings_val_true_unscaled,
-                                           ratings_val_predict_unscaled,
-                                           'val_unscaled'))
+            train_score = model.evaluate(
+                x=(self._train_data['user_id'], self._train_data['work_id']),
+                y=self._train_data['rating'],
+                batch_size=train_params['batch_size'], return_dict=True)
+            val_score = model.evaluate(
+                x=(self._val_data['user_id'], self._val_data['work_id']),
+                y=self._val_data['rating'],
+                batch_size=train_params['batch_size'], return_dict=True)
+            neptune_run['score'] = {
+                'train_rmse': train_score['root_mean_squared_error'],
+                'train_mae': train_score['mean_absolute_error'],
+                'val_rmse': val_score['root_mean_squared_error'],
+                'val_mae': val_score['mean_absolute_error'],
+            }
 
-            # Log scores amd learning rate
-            neptune_run['score'] = scores
+            # Log learning rate
             neptune_run['training/lr_epoch'].log(history.history.get('lr', []))
 
             # Save model
-            run_id = neptune_run.get_attribute('sys/id').fetch()
-            model_path = os.path.join('../trained_models', f'{run_id}')
-            recommender.save(model_path)
-            neptune_run['model/path'] = os.path.abspath(model_path)
-
+            if self.model_path:
+                run_id = neptune_run.get_attribute('sys/id').fetch()
+                model_path = os.path.join(self.model_path, f'{run_id}')
+                model.save(model_path)
+                neptune_run['model/path'] = os.path.abspath(model_path)
         finally:
             neptune_run.stop()
+        return val_score['root_mean_squared_error']
 
-        # To pass the value to the main process
-        self._queue.put(scores['val_rmse'])
-
-    def _get_loss_func(self, loss_name: str) -> tf.keras.losses.Loss:
+    def _get_loss(self, name: str, **kwargs) -> tf.keras.losses.Loss:
         """Create loss function.
 
-        :param loss_name: name of loss function
+        :param name: name of loss function
         :return: loss object.
         """
-        if loss_name == 'huber':
-            return Huber()
-        if loss_name == 'mse':
-            return MeanSquaredError()
-        raise ValueError(f'Unknown name of the loss function — {loss_name}.')
+        if name == 'huber':
+            return Huber(**kwargs)
+        if name == 'mse':
+            return MeanSquaredError(**kwargs)
+        raise ValueError(f'Unknown name of the loss function — {name}.')
 
-    def _get_optimizer(self, optimizer_name: str, **kwargs) \
+    def _get_optimizer(self, name: str, **kwargs) \
             -> tf.keras.optimizers.Optimizer:
         """Create optimizer.
 
-        :param optimizer_name: name of optimizer.
+        :param name: name of optimizer.
         :return: optimizer instance.
         """
-        if optimizer_name == 'adam':
+        if name == 'adam':
             lr = kwargs.get('lr_init', 0.001)
             return Adam(learning_rate=lr)
-        raise ValueError(f'Unknown name of the optimizer — {optimizer_name}.')
+        raise ValueError(f'Unknown name of the optimizer — {name}.')
 
 
 if __name__ == '__main__':
-    # Load data
-    work_ratings_train = pd.read_csv(
-        os.path.join('..', 'data', 'work_ratings_train.csv'))
-    work_ratings_val = pd.read_csv(
-        os.path.join('..', 'data', 'work_ratings_val.csv'))
-    path_scaler = os.path.join('..', 'data', 'user_ratings_scalers.pkl')
-    with open(path_scaler, 'rb') as file:
-        scalers = pickle.load(file)
+    # Load environment variables
+    load_dotenv()
+
+    # Define params
+    study_name = 'gradient_descent'
+    trials_count = 15
+
+    # If the script is executed in parallel,
+    # we need to change this per each process to avoid duplicated trials
+    optuna_random_seed = int(os.environ['RANDOM_SEED'])
 
     # Start tuning
-    objective = ObjectiveGD(work_ratings_train, work_ratings_val, scalers)
-    study_name = 'gradient_descent'
+    objective = ObjectiveGD(
+        train_data_path=os.path.join('..', 'data', 'work_ratings_train.csv'),
+        val_data_path=os.path.join('..', 'data', 'work_ratings_val.csv'),
+        neptune_project_name=os.environ['NEPTUNE_PROJECT'],
+        neptune_api_key=os.environ['NEPTUNE_API_KEY'],
+        random_seed=int(os.environ['RANDOM_SEED']),
+        model_path=os.path.join('..', 'trained_models'))
     storage_url = URL.create(drivername=os.environ['OPTUNA_DB_DRIVER'],
                              username=os.environ['OPTUNA_DB_USER'],
                              password=os.environ['OPTUNA_DB_PASSWORD'],
@@ -282,8 +232,8 @@ if __name__ == '__main__':
                              database=os.environ['OPTUNA_DB_NAME'])
     storage = optuna.storages.RDBStorage(url=str(storage_url),
                                          engine_kwargs={'pool_recycle': 3600})
-    study_sampler = optuna.samplers.RandomSampler(seed=OPTUNA_RANDOM_SEED)
+    study_sampler = optuna.samplers.TPESampler(seed=optuna_random_seed)
     study = optuna.create_study(sampler=study_sampler, direction='minimize',
                                 storage=storage, load_if_exists=True,
                                 study_name=study_name)
-    study.optimize(objective, n_trials=10)
+    study.optimize(objective, n_trials=trials_count)
