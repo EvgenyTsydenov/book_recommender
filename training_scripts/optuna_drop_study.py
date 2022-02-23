@@ -1,12 +1,11 @@
 import os
 
 import optuna
+from dotenv import load_dotenv
 from sqlalchemy.engine import URL
 
-# noinspection PyUnresolvedReferences
-import shared
-
 if __name__ == '__main__':
+    load_dotenv()
     study_name = 'gradient_descent'
     storage_url = URL.create(drivername=os.environ['OPTUNA_DB_DRIVER'],
                              username=os.environ['OPTUNA_DB_USER'],
